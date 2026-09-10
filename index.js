@@ -3,11 +3,8 @@ import {
 } from '../../../extensions.js';
 
 import {
-    power_user,
-} from '../../../power-user.js';
-
-import {
     setUserAvatar,
+    getUserAvatars,
 } from '../../../personas.js';
 
 import {
@@ -17,13 +14,13 @@ import {
 
 const extensionName = 'TupperPersona';
 
+
 const defaultSettings = {
     enabled: true,
 };
 
 
-// Empêche plusieurs envois simultanés
-let isProcessingTupper = false;
+let isProcessing = false;
 
 
 /* =========================================================
@@ -32,64 +29,134 @@ let isProcessingTupper = false;
 
 function loadSettings() {
 
-    extension_settings[extensionName] =
-        extension_settings[extensionName] || {};
+    if (!extension_settings[extensionName]) {
+        extension_settings[extensionName] = {};
+    }
 
     if (
-        Object.keys(
-            extension_settings[extensionName]
-        ).length === 0
+        typeof extension_settings[extensionName].enabled
+        !== 'boolean'
     ) {
-        Object.assign(
-            extension_settings[extensionName],
-            defaultSettings
-        );
+        extension_settings[extensionName].enabled =
+            defaultSettings.enabled;
     }
 }
 
 
 /* =========================================================
-   FIND PERSONA
+   PERSONA LIST
    ========================================================= */
 
 /**
- * Trouve l'ID d'une Persona à partir de son nom.
+ * Récupère les Personas disponibles depuis SillyTavern.
  *
- * Exemple :
- *
- * Hagen
- *
- * trouvera la Persona "Hagen".
+ * getUserAvatars(false) retourne les IDs des avatars
+ * Persona actuellement disponibles.
  */
-function findPersonaByName(name) {
+async function getPersonaList() {
 
-    if (!power_user?.personas) {
-        return null;
+    try {
+
+        const avatars =
+            await getUserAvatars(false);
+
+        if (!Array.isArray(avatars)) {
+            return [];
+        }
+
+        return avatars;
+
+    } catch (error) {
+
+        console.error(
+            '[TupperPersona] Impossible de récupérer les Personas:',
+            error
+        );
+
+        return [];
     }
+}
 
-    const lowerName =
-        name
+
+/**
+ * Trouve l'avatar correspondant au nom d'une Persona.
+ */
+async function findPersonaByName(name) {
+
+    const target =
+        String(name)
             .trim()
             .toLowerCase();
 
+    if (!target) {
+        return null;
+    }
 
-    for (
-        const [avatarId, personaName]
-        of Object.entries(power_user.personas)
-    ) {
 
-        if (!personaName) {
-            continue;
-        }
+    const avatars =
+        await getPersonaList();
+
+
+    for (const avatarId of avatars) {
+
+        /*
+         * Le nom d'une Persona est stocké dans
+         * l'attribut data-name du sélecteur Persona.
+         */
+        const personaElement =
+            document.querySelector(
+                `[data-avatar-id="${CSS.escape(avatarId)}"]`
+            );
+
+
+        const personaName =
+            personaElement
+                ?.querySelector('.ch_name')
+                ?.textContent
+                ?.trim();
 
 
         if (
-            personaName
-                .trim()
-                .toLowerCase()
-            === lowerName
+            personaName &&
+            personaName.toLowerCase() === target
         ) {
+            return avatarId;
+        }
+    }
 
+
+    /*
+     * Fallback :
+     *
+     * SillyTavern conserve également les noms
+     * dans ses données internes.
+     */
+    const personaElements =
+        document.querySelectorAll(
+            '#user_avatar_block [data-avatar-id]'
+        );
+
+
+    for (const element of personaElements) {
+
+        const avatarId =
+            element.getAttribute(
+                'data-avatar-id'
+            );
+
+
+        const personaName =
+            element
+                .querySelector('.ch_name')
+                ?.textContent
+                ?.trim();
+
+
+        if (
+            avatarId &&
+            personaName &&
+            personaName.toLowerCase() === target
+        ) {
             return avatarId;
         }
     }
@@ -100,25 +167,29 @@ function findPersonaByName(name) {
 
 
 /* =========================================================
-   PARSE TUPPER MESSAGE
+   PARSE TUPPER
    ========================================================= */
 
 /**
- * Analyse un message Tupper.
- *
- * Format :
+ * Reconnaît :
  *
  * Nom: message
  *
  * Exemple :
  *
- * Hagen: Bonjour !
+ * Hagen: Bonjour
  */
-function parseTupperMessage(text) {
+function parseTupper(text) {
 
-    const match = text.match(
-        /^([^:\n]{1,40}):\s*([\s\S]*)$/
-    );
+    if (!text) {
+        return null;
+    }
+
+
+    const match =
+        text.match(
+            /^([^:\n]{1,40}):\s*([\s\S]*)$/
+        );
 
 
     if (!match) {
@@ -149,22 +220,10 @@ function parseTupperMessage(text) {
 
 
 /* =========================================================
-   HANDLE TUPPER SEND
+   PROCESS MESSAGE
    ========================================================= */
 
-/**
- * Traite un message Tupper.
- *
- * Exemple :
- *
- * Hagen: Bonjour
- *
- * devient :
- *
- * Persona Hagen sélectionnée
- * Bonjour
- */
-async function handleTupperSend() {
+async function processTupperMessage() {
 
     if (
         !extension_settings[
@@ -175,7 +234,7 @@ async function handleTupperSend() {
     }
 
 
-    if (isProcessingTupper) {
+    if (isProcessing) {
         return true;
     }
 
@@ -201,14 +260,16 @@ async function handleTupperSend() {
 
 
     const parsed =
-        parseTupperMessage(
+        parseTupper(
             originalText
         );
 
 
     /*
-     * Si ce n'est pas un message Tupper,
-     * SillyTavern continue normalement.
+     * Message normal.
+     *
+     * On laisse SillyTavern
+     * s'en occuper.
      */
     if (!parsed) {
         return false;
@@ -216,32 +277,34 @@ async function handleTupperSend() {
 
 
     const avatarId =
-        findPersonaByName(
+        await findPersonaByName(
             parsed.personaName
         );
 
 
     /*
-     * Si la Persona n'existe pas,
-     * SillyTavern continue normalement.
+     * Persona inconnue.
+     *
+     * On laisse également
+     * SillyTavern fonctionner normalement.
      */
     if (!avatarId) {
 
         console.log(
-            `[TupperPersona] Persona introuvable : ${parsed.personaName}`
+            `[TupperPersona] Persona inconnue: ${parsed.personaName}`
         );
 
         return false;
     }
 
 
-    isProcessingTupper = true;
+    isProcessing = true;
 
 
     try {
 
         console.log(
-            `[TupperPersona] Changement de Persona : ${parsed.personaName}`
+            `[TupperPersona] Persona trouvée: ${parsed.personaName}`
         );
 
 
@@ -258,7 +321,7 @@ async function handleTupperSend() {
 
 
         /* -------------------------------------------------
-           REPLACE MESSAGE
+           REMOVE TUPPER PREFIX
            ------------------------------------------------- */
 
         textarea.value =
@@ -276,14 +339,14 @@ async function handleTupperSend() {
 
 
         /* -------------------------------------------------
-           SEND MESSAGE
+           SEND
            ------------------------------------------------- */
 
         await sendTextareaMessage();
 
 
         console.log(
-            `[TupperPersona] Message envoyé avec la Persona : ${parsed.personaName}`
+            `[TupperPersona] Message envoyé avec ${parsed.personaName}`
         );
 
 
@@ -292,16 +355,15 @@ async function handleTupperSend() {
     } catch (error) {
 
         console.error(
-            '[TupperPersona] Erreur :',
+            '[TupperPersona] Erreur pendant l'envoi:',
             error
         );
 
 
         /*
-         * Si quelque chose échoue,
-         * on restaure le message original.
+         * Restaure le message si quelque chose
+         * s'est mal passé.
          */
-
         textarea.value =
             originalText;
 
@@ -320,18 +382,15 @@ async function handleTupperSend() {
 
     } finally {
 
-        isProcessingTupper = false;
+        isProcessing = false;
     }
 }
 
 
 /* =========================================================
-   KEYBOARD LISTENER
+   ENTER KEY
    ========================================================= */
 
-/**
- * Intercepte Enter.
- */
 function setupKeyboardListener() {
 
     document.addEventListener(
@@ -339,26 +398,11 @@ function setupKeyboardListener() {
         async (event) => {
 
             if (
-                event.key !== 'Enter'
+                event.key !== 'Enter' ||
+                event.shiftKey ||
+                event.ctrlKey ||
+                event.altKey
             ) {
-                return;
-            }
-
-
-            /*
-             * Shift + Enter = nouvelle ligne
-             */
-            if (event.shiftKey) {
-                return;
-            }
-
-
-            if (event.ctrlKey) {
-                return;
-            }
-
-
-            if (event.altKey) {
                 return;
             }
 
@@ -377,53 +421,45 @@ function setupKeyboardListener() {
             }
 
 
-            const text =
-                textarea.value.trim();
-
-
-            if (!text) {
-                return;
-            }
-
-
             const parsed =
-                parseTupperMessage(text);
+                parseTupper(
+                    textarea.value.trim()
+                );
 
 
             /*
-             * Message normal :
-             * on ne touche à rien.
+             * Pas un Tupper.
              */
             if (!parsed) {
                 return;
             }
 
 
+            /*
+             * On vérifie qu'une Persona
+             * porte bien ce nom avant
+             * d'intercepter Enter.
+             */
             const avatarId =
-                findPersonaByName(
+                await findPersonaByName(
                     parsed.personaName
                 );
 
 
-            /*
-             * Persona inconnue :
-             * on laisse SillyTavern gérer.
-             */
             if (!avatarId) {
                 return;
             }
 
 
             /*
-             * IMPORTANT :
-             * Empêche SillyTavern d'envoyer
-             * le message original.
+             * Empêche SillyTavern
+             * d'envoyer le texte original.
              */
             event.preventDefault();
             event.stopImmediatePropagation();
 
 
-            await handleTupperSend();
+            await processTupperMessage();
 
         },
         true
@@ -432,25 +468,22 @@ function setupKeyboardListener() {
 
 
 /* =========================================================
-   SEND BUTTON LISTENER
+   SEND BUTTON
    ========================================================= */
 
-/**
- * Intercepte le bouton Envoyer.
- */
 function setupSendButtonListener() {
 
     document.addEventListener(
         'click',
         async (event) => {
 
-            const sendButton =
+            const button =
                 event.target.closest(
                     '#send_but'
                 );
 
 
-            if (!sendButton) {
+            if (!button) {
                 return;
             }
 
@@ -466,22 +499,14 @@ function setupSendButtonListener() {
             }
 
 
-            const text =
-                textarea.value.trim();
-
-
-            if (!text) {
-                return;
-            }
-
-
             const parsed =
-                parseTupperMessage(text);
+                parseTupper(
+                    textarea.value.trim()
+                );
 
 
             /*
-             * Message normal :
-             * comportement normal de SillyTavern.
+             * Message normal.
              */
             if (!parsed) {
                 return;
@@ -489,14 +514,13 @@ function setupSendButtonListener() {
 
 
             const avatarId =
-                findPersonaByName(
+                await findPersonaByName(
                     parsed.personaName
                 );
 
 
             /*
-             * Persona inconnue :
-             * comportement normal.
+             * Persona inconnue.
              */
             if (!avatarId) {
                 return;
@@ -504,14 +528,15 @@ function setupSendButtonListener() {
 
 
             /*
-             * Empêche l'envoi natif
-             * de SillyTavern.
+             * Empêche le bouton natif
+             * de SillyTavern d'envoyer
+             * le message original.
              */
             event.preventDefault();
             event.stopImmediatePropagation();
 
 
-            await handleTupperSend();
+            await processTupperMessage();
 
         },
         true
@@ -523,17 +548,28 @@ function setupSendButtonListener() {
    INITIALIZATION
    ========================================================= */
 
-jQuery(async () => {
+jQuery(() => {
 
-    loadSettings();
+    try {
 
-    setupKeyboardListener();
+        loadSettings();
 
-    setupSendButtonListener();
+        setupKeyboardListener();
+
+        setupSendButtonListener();
 
 
-    console.log(
-        '[TupperPersona] Extension chargée avec succès.'
-    );
+        console.log(
+            '[TupperPersona] Extension chargée.'
+        );
+
+    } catch (error) {
+
+        console.error(
+            '[TupperPersona] Erreur d'initialisation:',
+            error
+        );
+
+    }
 
 });
