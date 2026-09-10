@@ -5,8 +5,8 @@
     "optional": [],
     "js": "index.js",
     "css": "",
-    "author": "Grok",
+    "author": "Hydra",
     "version": "1.0.0",
-    "homePage": "https://github.com/TON_USERNAME/SillyTavern-TupperPersona",
-    "auto_update": true
+    "homePage": "https://github.com/hydravnss/Tupperbox",
+    "auto_update": false
 }
