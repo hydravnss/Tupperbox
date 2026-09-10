@@ -87,7 +87,7 @@ function parseTupperMessage(text) {
 
 
 /* =========================================================
-   PROCESS TUPPER
+   PROCESS TUPPER MESSAGE
    ========================================================= */
 
 async function processTupperMessage() {
@@ -349,8 +349,15 @@ function initialize() {
 }
 
 
+/* =========================================================
+   START
+   ========================================================= */
+
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initialize);
+    document.addEventListener(
+        'DOMContentLoaded',
+        initialize
+    );
 } else {
     initialize();
 }
